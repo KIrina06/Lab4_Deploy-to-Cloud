@@ -2,10 +2,16 @@ name: GitHub Classroom Workflow
 on:
   push:
     branches:
-      - master
+      - develop
   pull_request:
     branches:
-      - master
+      - develop
+
+permissions:
+  contents: read
+  checks: write
+  actions: read
+
 jobs:
   build:
     name: Autograding
@@ -17,19 +23,39 @@ jobs:
 
       - uses: docker/setup-buildx-action@v2
 
-      # TODO build and run unit tests
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      - name: Build images
-        timeout-minutes: 10
+      - name: Build and push images
         run: docker compose build --push
 
-      # TODO deploy to k8s with liveness and readyness probes
+      - name: Install YC CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+          echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
 
-      - name: Wait before services are ready
-        run: kubectl wait -n test -l app.kubernetes.io/name=gateway pod --for=condition=Ready --timeout 3m
-      
-      # TODO setup parameters in classroom/autograding.json
-      
+      - name: Configure YC
+        run: |
+          echo '${{ secrets.YC_SERVICE_ACCOUNT_KEY }}' > key.json
+          yc config profile create github-actions
+          yc config set service-account-key key.json
+          yc config set cloud-id "${{ secrets.YC_CLOUD_ID }}"
+          yc config set folder-id "${{ secrets.YC_FOLDER_ID }}"
+
+      - name: Configure kubectl
+        run: |
+          yc managed-kubernetes cluster get-credentials car-rental-cluster --external --force
+
+      - name: Deploy to Kubernetes
+        run: |
+          helm upgrade --install car-rental ./helm/app
+
+      - name: Wait for services
+        run: |
+          kubectl rollout status deployment/gateway-service --timeout=180s
+          kubectl rollout status deployment/cars-service --timeout=180s
+          kubectl rollout status deployment/rental-service --timeout=180s
+          kubectl rollout status deployment/payment-service --timeout=180s
+
       - name: Autograding
         uses: education/autograding@v1
-        continue-on-error: true
